@@ -1,6 +1,7 @@
 import gym
 import numpy as np
 from gym import spaces
+from compute_whittle import compute_whittle
 
 class RMABSimulator(gym.Env):
     """
@@ -9,6 +10,13 @@ class RMABSimulator(gym.Env):
     This environment models a healthcare scenario where you have limited resources to allocate among a group of patients.
     Patients can either be treated as individuals or grouped by characteristics.
     """
+    # will be a transition matrix
+    transitions = ([0.3, 0.7], # Probability unhealthy patient stay  unhealthy become healthy without treatment
+                   [0.1, 0.9] # Probability healthy patient becomes unhealthy or stay healthy with  treatment
+                   )
+    state = 0
+    discount_factor = 0.9
+    subsidy = 0.1
 
     def __init__(self, num_arms=10, budget=3, grouping=False):
         # Parameters
@@ -37,6 +45,27 @@ class RMABSimulator(gym.Env):
         self.state = np.random.choice([0, 1], size=self.num_arms)
         return self.state
 
+    def compute_whittle_actions(self):
+        """
+        Compute the Whittle Index for each patient and decide which patients to treat.
+        """
+        whittle_indices = []
+        for i in range(self.num_arms):
+            state = self.state[i]
+            whittle_index = compute_whittle(self.transitions, state, self.discount_factor, self.subsidy)
+            whittle_indices.append((whittle_index, i))
+    
+        # Sort arms by Whittle Index in descending order (treat those with the highest index)
+        whittle_indices.sort(reverse=True, key=lambda x: x[0])
+
+        # Select top `budget` patients to treat
+        action = np.zeros(self.num_arms, dtype=int)
+        for _, patient_index in whittle_indices[:self.budget]:
+            action[patient_index] = 1
+
+        return action
+
+    # Then the step function can remain the same, but now actions are guided by Whittle Index
     def step(self, action):
         """
         Apply an action to the environment and transition to the next state.
@@ -73,13 +102,17 @@ class RMABSimulator(gym.Env):
         # Update internal state
         self.state = next_state
 
+         # Calculate the percentage of healthy individuals (state == 1)
+        healthy_percentage = np.mean(self.state) * 100
+
         # Determine if the episode is done (for now, we assume it's never-ending)
         done = False
 
         # Additional information (can be used for debugging)
         info = {}
 
-        return next_state, reward, done, info
+        return next_state, reward, healthy_percentage, done, info
+
 
     def render(self, mode='human'):
         """
@@ -97,10 +130,29 @@ class RMABSimulator(gym.Env):
     def compute_group_state(self):
         """
         Compute the average transition probability of the group.
-        This is a placeholder function for grouping patients.
+        If `grouping` is True, consider group-level characteristics.
+        Otherwise, compute based on individual states.
         """
-        group_avg_prob = np.mean(self.state)
+        total_prob = 0
+        if self.grouping:
+            # Logic for grouping (can be based on patient characteristics, etc.)
+            group_avg_prob = np.mean(self.state)  # Example of how grouping can be simplified
+        else:
+            # Compute transition probabilities based on individual states
+            for i in range(self.num_arms):
+                if self.state[i] == 0:  # Unhealthy
+                    # Use the probability of transitioning from unhealthy to healthy
+                    total_prob += self.transitions[0][1]  # Transition from state 0 to state 1
+                else:  # Healthy
+                    # Use the probability of transitioning from healthy to unhealthy
+                    total_prob += self.transitions[1][0]  # Transition from state 1 to state 0
+        
+            # Calculate the average probability across the group
+            group_avg_prob = total_prob / self.num_arms
+
         return group_avg_prob
+
+
 
 
 if __name__ == "__main__":

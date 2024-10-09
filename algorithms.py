@@ -1,1 +1,1 @@
-# Optimal with known transition probabilities (70% to go from 0 to 1 and 10% for the opposite)
+# Will be used for different policies
