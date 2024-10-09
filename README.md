@@ -4,8 +4,8 @@ inspired by: https://github.com/lily-x/online-rmab/tree/main/src
 
 
 ## Files
-- `main.py` - main driver
-- `algorithms.py` - optimal (as of right now)
+- `main.py` - runs simulator with visulization
+- `algorithms.py` - in progress
 - `compute_whittle.py` - computes whittle index
 - `simulator.py` - simulator using OpenAI's gym
 
@@ -13,4 +13,4 @@ inspired by: https://github.com/lily-x/online-rmab/tree/main/src
 To run in CLI use:  
 
 ```python
-python main.py --num_arms [arms] --budget 3 --episodes [episodes]
+python main.py --num_arms [arms] --budget [budget] --episodes [episodes]
