@@ -10,10 +10,6 @@ class RMABSimulator(gym.Env):
     This environment models a healthcare scenario where you have limited resources to allocate among a group of patients.
     Patients can either be treated as individuals or grouped by characteristics.
     """
-    # will be a transition matrix
-    transitions = ([0.3, 0.7], # Probability unhealthy patient stay  unhealthy become healthy without treatment
-                   [0.1, 0.9] # Probability healthy patient becomes unhealthy or stay healthy with  treatment
-                   )
     state = 0
     discount_factor = 0.9
     subsidy = 0.1
@@ -25,8 +21,9 @@ class RMABSimulator(gym.Env):
         self.grouping = grouping  # Wheather arms are groups or people
 
         # Transition Probabilities
-        self.prob_recover = 0.7  # Probability of recovering to a healthy state when treated
-        self.prob_deteriorate = 0.1  # Probability of deteriorating to an unhealthy state when untreated
+        self.base_recover_prob = 0.7
+        self.base_deteriorate_prob = 0.1
+
 
         # State Space and Action Space
         self.state_space = spaces.Discrete(2)  # Assuming binary state (0 or 1)
@@ -41,9 +38,66 @@ class RMABSimulator(gym.Env):
         """
         Reset the environment to an initial state.
         Each patient starts in a random state (0 or 1).
+        features are randomly generated as well
         """
         self.state = np.random.choice([0, 1], size=self.num_arms)
+        self.features = np.zeros((self.num_arms, 4))  # Define a feature array with 4 features per arm
+
+
+        for i in range(self.num_arms):
+            # Age: Normalize between 0 and 1 (e.g., 0 = young, 1 = old)
+            self.features[i, 0] = np.random.uniform(0, 1)
+            # Sex: Binary (0 = female, 1 = male)
+            self.features[i, 1] = np.random.choice([0, 1])
+            # Race: 5 categories encoded as numbers (e.g., 0 = White, 1 = Black, 2 = Asian, 3 = Hispanic, 4 = Other/Mixed)
+            self.features[i, 2] = np.random.choice([0, 1, 2, 3, 4])
+            # Pre-existing conditions: Binary (0 = no, 1 = yes)
+            self.features[i, 3] = np.random.uniform(0, 1)
+
         return self.state
+    
+    def adjust_probabilities(self, features, base_recover_prob=0.7, base_deteriorate_prob=0.1):
+        """
+        Adjust transition probabilities based on patient features using weighted sum approach.
+        
+        Arguments:
+        - features: An array of features [age, gender, race, pre-existing condition (severity)].
+        - base_recover_prob: The base recovery probability before adjustments.
+        - base_deteriorate_prob: The base deterioration probability before adjustments.
+
+        Returns:
+        - recover_prob: Adjusted recovery probability.
+        - deteriorate_prob: Adjusted deterioration probability.
+        """
+
+        # Feature weights
+        age_weight = -0.2  # Older age decreases recovery, increases deterioration
+        sex_weight = 0.05  # A small amount for sex
+        race_weights = [0, -0.05, -0.1, -0.15, -0.1]  # Weights for each race, adjust to represent health disparities
+        pre_existing_weight = -0.3  # Severe pre-existing conditions significantly reduce recovery
+
+        # Extract features (age, gender, race, pre-existing condition severity)
+        age, sex, race, pre_existing_condition = features
+
+        # Adjust recovery probability based on features
+        recover_prob = base_recover_prob
+        recover_prob += age_weight * age  # Age negatively affects recovery
+        recover_prob += sex_weight * sex  # Gender affects recovery slightly
+        recover_prob += race_weights[int(race)]  # Race-based health disparity
+        recover_prob += pre_existing_weight * pre_existing_condition  # Pre-existing conditions lower recovery
+
+        # Adjust deterioration probability based on features
+        deteriorate_prob = base_deteriorate_prob
+        deteriorate_prob -= age_weight * age  # Older people deteriorate faster
+        deteriorate_prob -= sex_weight * sex  # Minor gender difference
+        deteriorate_prob -= race_weights[int(race)]  # Race-based health disparity
+        deteriorate_prob -= pre_existing_weight * pre_existing_condition  # Pre-existing conditions worsen deterioration
+
+        # Ensure probabilities remain within valid bounds [0, 1]
+        recover_prob = np.clip(recover_prob, 0, 1)
+        deteriorate_prob = np.clip(deteriorate_prob, 0, 1)
+
+        return recover_prob, deteriorate_prob   
 
     def compute_whittle_actions(self):
         """
@@ -52,8 +106,12 @@ class RMABSimulator(gym.Env):
         whittle_indices = []
         for i in range(self.num_arms):
             state = self.state[i]
-            whittle_index = compute_whittle(self.transitions, state, self.discount_factor, self.subsidy)
-            whittle_indices.append((whittle_index, i))
+
+        # Adjust probabilities based on the patient's features
+        recover_prob, deteriorate_prob = self.adjust_probabilities(self.features[i])
+
+        whittle_index = compute_whittle([recover_prob, deteriorate_prob], state, self.discount_factor, self.subsidy)
+        whittle_indices.append((whittle_index, i))
     
         # Sort arms by Whittle Index in descending order (treat those with the highest index)
         whittle_indices.sort(reverse=True, key=lambda x: x[0])
@@ -88,16 +146,17 @@ class RMABSimulator(gym.Env):
         next_state = self.state.copy()
 
         for i in range(self.num_arms):
-            if action[i] == 1:  # If the arm is being treated
-                if self.state[i] == 0:
-                    # Treatment causes recovery with 70% probability
-                    if np.random.rand() < self.prob_recover:
-                        next_state[i] = 1
-                        reward += 1  # Reward for successful treatment
-            else:
-                # Non-treated patients might deteriorate with 10% probability
-                if self.state[i] == 1 and np.random.rand() < self.prob_deteriorate:
-                    next_state[i] = 0
+            features = self.features[i]  # Extract the features for arm i
+            recover_prob, deteriorate_prob = self.adjust_probabilities(self.features[i])
+
+        if action[i] == 1:  # If the arm is being treated
+            if self.state[i] == 0 and np.random.rand() < recover_prob:
+                next_state[i] = 1
+                reward += 1  # Reward for successful treatment
+        else:
+            if self.state[i] == 1 and np.random.rand() < deteriorate_prob:
+                next_state[i] = 0
+
 
         # Update internal state
         self.state = next_state
