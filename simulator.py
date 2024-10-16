@@ -10,20 +10,22 @@ class RMABSimulator(gym.Env):
     This environment models a healthcare scenario where you have limited resources to allocate among a group of patients.
     Patients can either be treated as individuals or grouped by characteristics.
     """
-    state = 0
-    discount_factor = 0.9
-    subsidy = 0.1
+    # state = 0
+    discount_factor = 0.75
+    subsidy = 0.4
 
-    def __init__(self, num_arms=10, budget=3, grouping=False):
+    def __init__(self, num_arms=10, budget=3, grouping=False, subsidy=0.4, discount_factor=0.75):
         # Parameters
         self.num_arms = num_arms  # This is the number of patients (or groups)
         self.budget = budget  # The number of treatments available
-        self.grouping = grouping  # Wheather arms are groups or people
+        self.grouping = grouping  # Whether arms are groups or people
+        self.subsidy = subsidy  # Set subsidy value from CLI
+        self.discount_factor = discount_factor  # Set discount factor from CLI
+        self.groups = {}
 
         # Transition Probabilities
-        self.base_recover_prob = 0.7
+        self.base_recover_prob = 0.9
         self.base_deteriorate_prob = 0.1
-
 
         # State Space and Action Space
         self.state_space = spaces.Discrete(2)  # Assuming binary state (0 or 1)
@@ -54,9 +56,12 @@ class RMABSimulator(gym.Env):
             # Pre-existing conditions: Binary (0 = no, 1 = yes)
             self.features[i, 3] = np.random.uniform(0, 1)
 
+        if self.grouping:
+            self.group_patients()
+        
         return self.state
     
-    def adjust_probabilities(self, features, base_recover_prob=0.7, base_deteriorate_prob=0.1):
+    def adjust_probabilities(self, features, base_recover_prob=0.9, base_deteriorate_prob=0.05):
         """
         Adjust transition probabilities based on patient features using weighted sum approach.
         
@@ -101,27 +106,45 @@ class RMABSimulator(gym.Env):
 
     def compute_whittle_actions(self):
         """
-        Compute the Whittle Index for each patient and decide which patients to treat.
+        Compute the Whittle Index for each patient or group and decide which patients to treat.
         """
         whittle_indices = []
-        for i in range(self.num_arms):
-            state = self.state[i]
 
-        # Adjust probabilities based on the patient's features
-        recover_prob, deteriorate_prob = self.adjust_probabilities(self.features[i])
+        if self.grouping:
+            # Compute Whittle index for groups
+            for group_key in self.groups:
+                avg_recover_prob, avg_deteriorate_prob = self.adjust_group_probabilities(group_key)
+                # Use the state of the first patient in the group as a representative
+                state = self.state[self.groups[group_key][0]]
+                whittle_index = compute_whittle([avg_recover_prob, avg_deteriorate_prob], state, self.discount_factor, self.subsidy)
+                whittle_indices.append((whittle_index, group_key))
+        else:
+            # Compute Whittle index for individual patients
+            for i in range(self.num_arms):
+                recover_prob, deteriorate_prob = self.adjust_probabilities(self.features[i])
+                state = self.state[i]
+                whittle_index = compute_whittle([recover_prob, deteriorate_prob], state, self.discount_factor, self.subsidy)
+                whittle_indices.append((whittle_index, i))
 
-        whittle_index = compute_whittle([recover_prob, deteriorate_prob], state, self.discount_factor, self.subsidy)
-        whittle_indices.append((whittle_index, i))
-    
-        # Sort arms by Whittle Index in descending order (treat those with the highest index)
+        # Sort by Whittle index in descending order (treat the highest index)
         whittle_indices.sort(reverse=True, key=lambda x: x[0])
 
-        # Select top `budget` patients to treat
+        # Select top `budget` number of treatments
         action = np.zeros(self.num_arms, dtype=int)
-        for _, patient_index in whittle_indices[:self.budget]:
-            action[patient_index] = 1
+
+        if self.grouping:
+            # Treat the top-ranked groups
+            for _, group_key in whittle_indices[:self.budget]:
+                # Treat all individuals in the group
+                for i in self.groups[group_key]:
+                    action[i] = 1
+        else:
+            # Treat the top-ranked individuals
+            for _, patient_index in whittle_indices[:self.budget]:
+                action[patient_index] = 1
 
         return action
+
 
     # Then the step function can remain the same, but now actions are guided by Whittle Index
     def step(self, action):
@@ -210,6 +233,69 @@ class RMABSimulator(gym.Env):
             group_avg_prob = total_prob / self.num_arms
 
         return group_avg_prob
+    
+    def group_patients(self):
+        """
+        Group patients based on their features (e.g., age, sex, race, and pre-existing conditions).
+        """
+        self.groups = {}
+        for i in range(self.num_arms):
+            # Example: Group by Age and Pre-existing conditions
+            age_group = "young" if self.features[i, 0] < 0.33 else "middle-aged" if self.features[i, 0] < 0.66 else "old"
+            pre_condition_group = "low" if self.features[i, 3] < 0.33 else "moderate" if self.features[i, 3] < 0.66 else "high"
+
+            # Use a tuple (age_group, pre_condition_group) as the group key
+            group_key = (age_group, pre_condition_group)
+
+            if group_key not in self.groups:
+                self.groups[group_key] = []
+            self.groups[group_key].append(i)  # Add patient index to the group
+    
+    def adjust_group_probabilities(self, group_key):
+        """
+        Adjust transition probabilities for a group based on average feature values.
+        """
+        group = self.groups[group_key]
+        total_recover_prob = 0
+        total_deteriorate_prob = 0
+
+        # Average over all patients in the group
+        for i in group:
+            recover_prob, deteriorate_prob = self.adjust_probabilities(self.features[i])
+            total_recover_prob += recover_prob
+            total_deteriorate_prob += deteriorate_prob
+
+        # Return the average probabilities for the group
+        avg_recover_prob = total_recover_prob / len(group)
+        avg_deteriorate_prob = total_deteriorate_prob / len(group)
+
+        return avg_recover_prob, avg_deteriorate_prob
+    
+    def calculate_average_probabilities(self):
+        """
+        Calculate the average recovery and deterioration probabilities for all arms (patients).
+        
+        Returns:
+        - avg_recover_prob: The average recovery probability across all arms.
+        - avg_deteriorate_prob: The average deterioration probability across all arms.
+        """
+        total_recover_prob = 0
+        total_deteriorate_prob = 0
+
+        # Loop through each arm (patient)
+        for i in range(self.num_arms):
+            features = self.features[i]
+            recover_prob, deteriorate_prob = self.adjust_probabilities(features)
+            
+            total_recover_prob += recover_prob
+            total_deteriorate_prob += deteriorate_prob
+        
+        # Compute the average by dividing by the number of arms
+        avg_recover_prob = total_recover_prob / self.num_arms
+        avg_deteriorate_prob = total_deteriorate_prob / self.num_arms
+        
+        return avg_recover_prob, avg_deteriorate_prob
+
 
 
 
@@ -224,3 +310,5 @@ if __name__ == "__main__":
     action = np.array([1, 0, 1, 0, 0])  # Example action where we treat patients 0 and 2
     next_state, reward, done, info = env.step(action)
     print(f"Next State: {next_state}, Reward: {reward}")
+
+    

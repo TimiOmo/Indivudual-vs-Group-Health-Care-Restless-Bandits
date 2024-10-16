@@ -30,18 +30,18 @@ def compute_whittle(transitions, state, discount_factor, subsidy):
 def compute_value_treatment(recover_prob, state, discount_factor):
     """
     Compute the expected value of treating a patient in a given state.
-    Adjusted to use the dynamic recover probability instead of a fixed transition matrix.
+    Adjust to use the dynamic recover probability and separate immediate rewards from future rewards.
     """
-    # If the patient is unhealthy (state = 0)
+    # Immediate reward
     if state == 0:
-        value_treat = recover_prob * (1)  # Reward for becoming healthy
+        immediate_reward = recover_prob * 1  # Reward for becoming healthy
     else:
-        value_treat = 1  # Patient is already healthy, reward is 1 (stay healthy)
+        immediate_reward = 1  # Patient is already healthy
     
-    # Discount future rewards
-    discounted_value_treat = discount_factor * value_treat
-    return discounted_value_treat
+    # Future rewards
+    future_reward = discount_factor * recover_prob * 1  # Probability of remaining healthy in future
 
+    return immediate_reward + future_reward
 
 def compute_value_no_treatment(deteriorate_prob, state, discount_factor):
     """
@@ -52,9 +52,9 @@ def compute_value_no_treatment(deteriorate_prob, state, discount_factor):
     immediate_reward = 0 if state == 1 else -1  # Penalize if the patient is unhealthy and no treatment is given
 
     # Calculate future expected value based on deterioration probability
-    future_value = deteriorate_prob * 0 + (1 - deteriorate_prob) * 1  # Probability of staying healthy
+    future_value = deteriorate_prob * (-1) + (1 - deteriorate_prob) * 1  # Penalize deterioration, reward staying healthy
 
-    # Apply discount factor
-    value_no_treat = immediate_reward + discount_factor * future_value
+    # Apply discount factor to future rewards
+    future_reward = discount_factor * future_value
 
-    return value_no_treat
+    return immediate_reward + future_reward
