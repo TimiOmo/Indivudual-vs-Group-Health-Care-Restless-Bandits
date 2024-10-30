@@ -20,7 +20,7 @@ def run_experiment(policy_name="whittle", num_arms=10, budget=3, episodes=1000, 
         if policy_name == "whittle":
             action = env.compute_whittle_actions()
         elif policy_name == "random":
-            action = random_policy(env.num_arms, env.budget)
+            action = random_policy(env)
         else:
             raise ValueError(f"Unknown policy: {policy_name}")
 
@@ -31,12 +31,14 @@ def run_experiment(policy_name="whittle", num_arms=10, budget=3, episodes=1000, 
     avg_reward = np.mean(total_rewards)
     print(f"Average reward over {episodes} episodes: {avg_reward}")
 
-    # At the start of each episode, compute the average probabilities
+    # Calculate cumulative rewards
+    cumulative_rewards = np.cumsum(total_rewards)
+
+    # Compute average probabilities
     avg_recover_prob, avg_deteriorate_prob = env.calculate_average_probabilities()
     print(f"Average Recover Probability: {avg_recover_prob}, Average Deteriorate Probability: {avg_deteriorate_prob}")
 
-    return total_rewards, healthy_percentages
-
+    return total_rewards, healthy_percentages, cumulative_rewards
 
 def run_multiple_experiments(num_runs, **kwargs):
     all_rewards = []
@@ -44,11 +46,10 @@ def run_multiple_experiments(num_runs, **kwargs):
 
     for run in range(num_runs):
         print(f"\nRunning experiment {run + 1} out of {num_runs}")
-        total_rewards, healthy_percentages = run_experiment(**kwargs)
+        total_rewards, healthy_percentages, _ = run_experiment(**kwargs)
         all_rewards.append(total_rewards)
         all_healthy_percentages.append(healthy_percentages)
 
-    # Take average across all runs
     avg_rewards = np.mean(all_rewards, axis=0)
     avg_healthy_percentages = np.mean(all_healthy_percentages, axis=0)
 
@@ -67,35 +68,50 @@ def main():
 
     args = parser.parse_args()
 
-    # Handle multiple runs if num_runs > 1
     if args.num_runs > 1:
         avg_rewards, avg_healthy_percentages = run_multiple_experiments(
             num_runs=args.num_runs, policy_name=args.policy, num_arms=args.num_arms, 
             budget=args.budget, episodes=args.episodes, grouping=args.grouping, 
             subsidy=args.subsidy, discount_factor=args.discount_factor
         )
+        cumulative_rewards = np.cumsum(avg_rewards)
     else:
-        avg_rewards, avg_healthy_percentages = run_experiment(
+        avg_rewards, avg_healthy_percentages, cumulative_rewards = run_experiment(
             policy_name=args.policy, num_arms=args.num_arms, budget=args.budget, 
             episodes=args.episodes, grouping=args.grouping, subsidy=args.subsidy, 
             discount_factor=args.discount_factor
         )
 
-    # Smooth the data
-    smoothed_rewards = moving_average(avg_rewards, window_size=500)
-    smoothed_healthy_percentages = moving_average(avg_healthy_percentages, window_size=500)
-    
-    # Plot the rewards
-    plt.figure(figsize=(12, 6))
+        
 
-    plt.subplot(1, 2, 1)
+    # Smooth data with dynamic window size based on number of episodes
+    window_size = min(50, len(avg_rewards) // 10)  # Adjust this to suit your data length
+    smoothed_rewards = moving_average(avg_rewards, window_size=window_size)
+    smoothed_healthy_percentages = moving_average(avg_healthy_percentages, window_size=window_size)
+
+
+    # Plot cumulative rewards and smoothed data
+    plt.figure(figsize=(18, 6))
+
+    # Cumulative reward plot
+    plt.subplot(1, 3, 1)
+    plt.plot(cumulative_rewards, linewidth=2, label="Cumulative Reward")
+    plt.title(f"Cumulative Reward over Episodes ({args.policy} policy)")
+    plt.xlabel("Episode")
+    plt.ylabel("Cumulative Reward")
+    plt.legend()
+    plt.grid(True)
+
+    # Smoothed reward plot
+    plt.subplot(1, 3, 2)
     plt.plot(smoothed_rewards, linewidth=2)
     plt.title(f"Smoothed Rewards over time ({args.policy} policy) - Grouping: {args.grouping}")
     plt.xlabel("Episode")
     plt.ylabel("Reward")
     plt.grid(True)
 
-    plt.subplot(1, 2, 2)
+    # Smoothed healthy percentage plot
+    plt.subplot(1, 3, 3)
     plt.plot(smoothed_healthy_percentages, linewidth=2)
     plt.title(f"Smoothed Percentage of Healthy Individuals ({args.policy} policy) - Grouping: {args.grouping}")
     plt.xlabel("Episode")

@@ -38,48 +38,64 @@ class RMABSimulator(gym.Env):
 
     def reset(self):
         """
-        Reset the environment to an initial state.
-        Each patient starts in a random state (0 or 1).
-        features are randomly generated as well
+        Reset the environment to an initial state with features that are distributed 
+        to better reflect real-world healthcare scenarios.
         """
-        self.state = np.random.choice([0, 1], size=self.num_arms)
+        self.state = np.random.choice([0, 1], size=self.num_arms)  # Random initial health state
         self.features = np.zeros((self.num_arms, 4))  # Define a feature array with 4 features per arm
 
-
         for i in range(self.num_arms):
-            # Age: Normalize between 0 and 1 (e.g., 0 = young, 1 = old)
-            self.features[i, 0] = np.random.uniform(0, 1)
-            # Sex: Binary (0 = female, 1 = male)
+            # Age: Skewed distribution towards older individuals
+            age = np.random.beta(2, 5)  # Beta distribution with more older individuals (values closer to 1)
+            self.features[i, 0] = age
+
+            # Sex: Assuming equal probability, 50% male, 50% female
             self.features[i, 1] = np.random.choice([0, 1])
-            # Race: 5 categories encoded as numbers (e.g., 0 = White, 1 = Black, 2 = Asian, 3 = Hispanic, 4 = Other/Mixed)
-            self.features[i, 2] = np.random.choice([0, 1, 2, 3, 4])
-            # Pre-existing conditions: Binary (0 = no, 1 = yes)
-            self.features[i, 3] = np.random.uniform(0, 1)
+
+            # Race: Adjust probabilities based on real-world demographics (example for the U.S.)
+            race = np.random.choice(
+                [0, 1, 2, 3, 4], 
+                p=[0.6, 0.13, 0.06, 0.18, 0.03]
+            )  # Example probabilities: White (60%), Black (13%), Asian (6%), Hispanic (18%), Other/Mixed (3%)
+            self.features[i, 2] = race
+
+            # Pre-existing Conditions: Higher probability for older people
+            pre_existing_prob = 0.1 + 0.8 * age  # Increase likelihood of pre-existing condition with age
+            self.features[i, 3] = np.random.binomial(1, pre_existing_prob)  # Binary: 0 (no) or 1 (yes)
 
         if self.grouping:
             self.group_patients()
         
         return self.state
+
     
-    def adjust_probabilities(self, features, base_recover_prob=0.9, base_deteriorate_prob=0.05):
+    def adjust_probabilities(self, features, base_recover_prob=0.9, base_deteriorate_prob=0.05, noise_level=0.02):
         """
-        Adjust transition probabilities based on patient features using weighted sum approach.
-        
+        Adjust transition probabilities based on patient features using weighted sum approach, 
+        with added noise for individual variation.
+
         Arguments:
         - features: An array of features [age, gender, race, pre-existing condition (severity)].
         - base_recover_prob: The base recovery probability before adjustments.
         - base_deteriorate_prob: The base deterioration probability before adjustments.
+        - noise_level: The maximum level of noise to add/subtract to feature weights for variability.
 
         Returns:
         - recover_prob: Adjusted recovery probability.
         - deteriorate_prob: Adjusted deterioration probability.
         """
 
-        # Feature weights
-        age_weight = -0.2  # Older age decreases recovery, increases deterioration
-        sex_weight = 0.05  # A small amount for sex
-        race_weights = [0, -0.05, -0.1, -0.15, -0.1]  # Weights for each race, adjust to represent health disparities
-        pre_existing_weight = -0.3  # Severe pre-existing conditions significantly reduce recovery
+        # Feature weights with added noise
+        age_weight = -0.2 + np.random.uniform(-noise_level, noise_level)
+        sex_weight = 0.05 + np.random.uniform(-noise_level, noise_level)
+        race_weights = [
+            0 + np.random.uniform(-noise_level, noise_level), 
+            -0.05 + np.random.uniform(-noise_level, noise_level), 
+            -0.1 + np.random.uniform(-noise_level, noise_level), 
+            -0.15 + np.random.uniform(-noise_level, noise_level), 
+            -0.1 + np.random.uniform(-noise_level, noise_level)
+        ]
+        pre_existing_weight = -0.3 + np.random.uniform(-noise_level, noise_level)
 
         # Extract features (age, gender, race, pre-existing condition severity)
         age, sex, race, pre_existing_condition = features
@@ -102,7 +118,7 @@ class RMABSimulator(gym.Env):
         recover_prob = np.clip(recover_prob, 0, 1)
         deteriorate_prob = np.clip(deteriorate_prob, 0, 1)
 
-        return recover_prob, deteriorate_prob   
+        return recover_prob, deteriorate_prob
 
     def compute_whittle_actions(self):
         """
@@ -146,7 +162,6 @@ class RMABSimulator(gym.Env):
         return action
 
 
-    # Then the step function can remain the same, but now actions are guided by Whittle Index
     def step(self, action):
         """
         Apply an action to the environment and transition to the next state.
@@ -157,44 +172,53 @@ class RMABSimulator(gym.Env):
 
         Returns:
         - next_state: The updated state after taking the action.
-        - reward: The reward obtained after taking the action.
-        - done: Whether the episode has ended.
+        - reward: The total reward obtained after taking the action.
+        - healthy_percentage: Percentage of healthy individuals after this step.
+        - done: Whether the episode has ended (for now, always False).
         - info: Additional information (for debugging).
         """
         # Validate action
         assert self.action_space.contains(action), f"Invalid action: {action}"
 
-        # Calculate reward and transition to next state
+        # Initialize variables for the total reward and next state
         reward = 0
         next_state = self.state.copy()
 
+        # Loop through each arm/patient to apply actions and calculate rewards
         for i in range(self.num_arms):
-            features = self.features[i]  # Extract the features for arm i
-            recover_prob, deteriorate_prob = self.adjust_probabilities(self.features[i])
+            # Extract the patient's features and adjust probabilities based on features
+            features = self.features[i]
+            recover_prob, deteriorate_prob = self.adjust_probabilities(features)
 
-        if action[i] == 1:  # If the arm is being treated
-            if self.state[i] == 0 and np.random.rand() < recover_prob:
-                next_state[i] = 1
-                reward += 1  # Reward for successful treatment
-        else:
-            if self.state[i] == 1 and np.random.rand() < deteriorate_prob:
-                next_state[i] = 0
+            if action[i] == 1:  # If the arm is being treated
+                if self.state[i] == 0:  # If the patient is currently unhealthy
+                    # Treating has a chance to make the patient healthy
+                    if np.random.rand() < recover_prob:
+                        next_state[i] = 1  # Patient becomes healthy
+                        reward += 1       # Reward for successful recovery
+                else:
+                    # Patient is already healthy, treat to maintain health (optional reward)
+                    reward += 1  # Reward for maintaining health
+            else:  # If the arm is not being treated
+                if self.state[i] == 1:  # If the patient is currently healthy
+                    # Patient may become unhealthy without treatment
+                    if np.random.rand() < deteriorate_prob:
+                        next_state[i] = 0  # Patient becomes unhealthy
+                # Optionally add a penalty if a sick patient is not treated (can be customized)
 
-
-        # Update internal state
+        # Update the environment state
         self.state = next_state
 
-         # Calculate the percentage of healthy individuals (state == 1)
+        # Calculate the percentage of healthy individuals (state == 1)
         healthy_percentage = np.mean(self.state) * 100
 
-        # Determine if the episode is done (for now, we assume it's never-ending)
+        # Determine if the episode is done (for now, always False)
         done = False
 
-        # Additional information (can be used for debugging)
+        # Additional information for debugging or analysis
         info = {}
 
         return next_state, reward, healthy_percentage, done, info
-
 
     def render(self, mode='human'):
         """
