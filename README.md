@@ -15,8 +15,9 @@ To run in the CLI, use:
 
 ```bash
 python main.py --num_arms [arms] --budget [budget] --episodes [episodes] --policy [whittle/random] --subsidy [subsidy] --discount_factor [discount_factor] --grouping --num_runs [runs]
+```
 
-### Parameters
+## Parameters
 
 - **N - number of arms**
   - `--num_arms`: Specify the number of arms (patients).
