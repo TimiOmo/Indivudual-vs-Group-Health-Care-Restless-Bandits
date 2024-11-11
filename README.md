@@ -1,48 +1,51 @@
-# Indivudual-vs-Group-Health-Care-Restless-Bandits
+# Individual vs Group Health Care Restless Bandits
 
-inspired by: https://github.com/lily-x/online-rmab/tree/main/src
-
+Inspired by: [online-rmab](https://github.com/lily-x/online-rmab)
 
 ## Files
-- `main.py` - runs simulator with visulization
-- `algorithms.py` - in progress
-- `compute_whittle.py` - computes whittle index
-- `simulator.py` - simulator using OpenAI's gym
+
+- `main.py` - Runs the simulator with visualization.
+- `algorithms.py` - Contains algorithms (in progress).
+- `compute_whittle.py` - Computes the Whittle index.
+- `simulator.py` - Simulator built using OpenAI's gym.
 
 ## Running
-To run in CLI use:  
 
-```python
+To run in the CLI, use:
+
+```bash
 python main.py --num_arms [arms] --budget [budget] --episodes [episodes] --policy [whittle/random] --subsidy [subsidy] --discount_factor [discount_factor] --grouping --num_runs [runs]
 
-N - number of arms
-(--num_arms) Specify the number of arms (patients).
-Example: --num_arms 10
+### Parameters
 
-T - number of episodes
-(--episodes) Total number of episodes to run.
-Example: --episodes 1000
+- **N - number of arms**
+  - `--num_arms`: Specify the number of arms (patients).
+  - Example: `--num_arms 10`
 
-B - budget
-(--budget) Total number of treatments/resources to spend.
-Example: --budget 3
+- **T - number of episodes**
+  - `--episodes`: Total number of episodes to run.
+  - Example: `--episodes 1000`
 
-P - policy to use
-(--policy) Choose the policy: whittle or random.
-Example: --policy whittle
+- **B - budget**
+  - `--budget`: Total number of treatments/resources to spend.
+  - Example: `--budget 3`
 
-S - subsidy for Whittle index computation
-(--subsidy) Specify the subsidy for Whittle index.
-Example: --subsidy 0.5
+- **P - policy to use**
+  - `--policy`: Choose the policy: whittle or random.
+  - Example: `--policy whittle`
 
-D - discount factor
-(--discount_factor) Set the discount factor for future rewards.
-Example: --discount_factor 0.9
+- **S - subsidy for Whittle index computation**
+  - `--subsidy`: Specify the subsidy for Whittle index.
+  - Example: `--subsidy 0.5`
 
-G - grouping option
-(--grouping) Toggle grouping of patients by characteristics. Default is False.
-Example: --grouping
+- **D - discount factor**
+  - `--discount_factor`: Set the discount factor for future rewards.
+  - Example: `--discount_factor 0.9`
 
-R - number of runs
-(--num_runs) Set the number of times to repeat the experiment.
-Example: --num_runs 5
+- **G - grouping option**
+  - `--grouping`: Toggle grouping of patients by characteristics. Default is False.
+  - Example: `--grouping`
+
+- **R - number of runs**
+  - `--num_runs`: Set the number of times to repeat the experiment.
+  - Example: `--num_runs 5`

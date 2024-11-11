@@ -46,12 +46,13 @@ def compute_value_treatment(recover_prob, state, discount_factor):
 def compute_value_no_treatment(deteriorate_prob, state, discount_factor):
     """
     Compute the value of not treating a patient based on the current state.
-    Adjusted to use the dynamic deteriorate probability instead of a fixed transition matrix.
+    Adjusted to use the dynamic deterioration probability instead of a fixed transition matrix.
     """
     # Immediate reward
     immediate_reward = 0 if state == 1 else -1  # Penalize if the patient is unhealthy and no treatment is given
 
     # Calculate future expected value based on deterioration probability
+    # This is the missing 'future_value' definition.
     future_value = deteriorate_prob * (-1) + (1 - deteriorate_prob) * 1  # Penalize deterioration, reward staying healthy
 
     # Apply discount factor to future rewards

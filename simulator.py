@@ -11,8 +11,8 @@ class RMABSimulator(gym.Env):
     Patients can either be treated as individuals or grouped by characteristics.
     """
     # state = 0
-    discount_factor = 0.75
-    subsidy = 0.4
+    discount_factor = 0.95
+    subsidy = 0.35
 
     def __init__(self, num_arms=10, budget=3, grouping=False, subsidy=0.4, discount_factor=0.75):
         # Parameters
