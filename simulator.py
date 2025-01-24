@@ -1,7 +1,20 @@
 import gym
 import numpy as np
+import torch
 from gym import spaces
 from compute_whittle import compute_whittle
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+from models.transition_NN import TransitionNN
+from models.transition_NN import TransitionNN  # Correct file name
+
+import torch
+model = TransitionNN(input_dim=4, hidden_dim=16, output_dim=4)
+model.load_state_dict(torch.load('models/trained_model.pth'))
+print("Model weights loaded successfully!")
+
 
 class RMABSimulator(gym.Env):
     """
@@ -10,18 +23,33 @@ class RMABSimulator(gym.Env):
     This environment models a healthcare scenario where you have limited resources to allocate among a group of patients.
     Patients can either be treated as individuals or grouped by characteristics.
     """
-    # state = 0
     discount_factor = 0.95
     subsidy = 0.35
 
-    def __init__(self, num_arms=10, budget=3, grouping=False, subsidy=0.4, discount_factor=0.75):
+    def __init__(self, num_arms=10, budget=3, grouping=False, subsidy=0.4, discount_factor=0.75, model_path=None):
+        """
+        Initialize the RMABSimulator environment.
+
+        Parameters:
+        - num_arms: Number of patients or groups.
+        - budget: Maximum number of treatments available at each step.
+        - grouping: Whether patients are treated as groups or individuals.
+        - subsidy: Baseline subsidy for treatment decisions.
+        - discount_factor: Discount factor for future rewards.
+        - model_path: Path to the pretrained neural network model (optional).
+        """
         # Parameters
-        self.num_arms = num_arms  # This is the number of patients (or groups)
-        self.budget = budget  # The number of treatments available
-        self.grouping = grouping  # Whether arms are groups or people
-        self.subsidy = subsidy  # Set subsidy value from CLI
-        self.discount_factor = discount_factor  # Set discount factor from CLI
+        self.num_arms = num_arms
+        self.budget = budget
+        self.grouping = grouping
+        self.subsidy = subsidy
+        self.discount_factor = discount_factor
         self.groups = {}
+
+        # Load the neural network model if provided
+        self.model = None
+        if model_path:
+            self.model = self.load_model(model_path)
 
         # Transition Probabilities
         self.base_recover_prob = 0.9
@@ -35,6 +63,15 @@ class RMABSimulator(gym.Env):
         # Internal State
         self.state = None
         self.reset()
+
+    def load_model(self, model_path):
+        """
+        Load the pretrained neural network model from the specified path.
+        """
+        model = TransitionNN(input_dim=4, hidden_dim=16, output_dim=4)  # Adjust hidden_dim if needed
+        model.load_state_dict(torch.load(model_path))
+        model.eval()  # Set model to evaluation mode
+        return model
 
     def reset(self):
         """
@@ -68,55 +105,21 @@ class RMABSimulator(gym.Env):
         
         return self.state
 
-    
-    def adjust_probabilities(self, features, base_recover_prob=0.9, base_deteriorate_prob=0.05, noise_level=0.02):
+    def adjust_probabilities(self, features):
         """
-        Adjust transition probabilities based on patient features using weighted sum approach, 
-        with added noise for individual variation.
-
-        Arguments:
-        - features: An array of features [age, gender, race, pre-existing condition (severity)].
-        - base_recover_prob: The base recovery probability before adjustments.
-        - base_deteriorate_prob: The base deterioration probability before adjustments.
-        - noise_level: The maximum level of noise to add/subtract to feature weights for variability.
-
-        Returns:
-        - recover_prob: Adjusted recovery probability.
-        - deteriorate_prob: Adjusted deterioration probability.
+        Adjust transition probabilities based on patient features using the neural network model.
+        If the model is not provided, fall back to the default manual logic.
         """
-
-        # Feature weights with added noise
-        age_weight = -0.2 + np.random.uniform(-noise_level, noise_level)
-        sex_weight = 0.05 + np.random.uniform(-noise_level, noise_level)
-        race_weights = [
-            0 + np.random.uniform(-noise_level, noise_level), 
-            -0.05 + np.random.uniform(-noise_level, noise_level), 
-            -0.1 + np.random.uniform(-noise_level, noise_level), 
-            -0.15 + np.random.uniform(-noise_level, noise_level), 
-            -0.1 + np.random.uniform(-noise_level, noise_level)
-        ]
-        pre_existing_weight = -0.3 + np.random.uniform(-noise_level, noise_level)
-
-        # Extract features (age, gender, race, pre-existing condition severity)
-        age, sex, race, pre_existing_condition = features
-
-        # Adjust recovery probability based on features
-        recover_prob = base_recover_prob
-        recover_prob += age_weight * age  # Age negatively affects recovery
-        recover_prob += sex_weight * sex  # Gender affects recovery slightly
-        recover_prob += race_weights[int(race)]  # Race-based health disparity
-        recover_prob += pre_existing_weight * pre_existing_condition  # Pre-existing conditions lower recovery
-
-        # Adjust deterioration probability based on features
-        deteriorate_prob = base_deteriorate_prob
-        deteriorate_prob -= age_weight * age  # Older people deteriorate faster
-        deteriorate_prob -= sex_weight * sex  # Minor gender difference
-        deteriorate_prob -= race_weights[int(race)]  # Race-based health disparity
-        deteriorate_prob -= pre_existing_weight * pre_existing_condition  # Pre-existing conditions worsen deterioration
-
-        # Ensure probabilities remain within valid bounds [0, 1]
-        recover_prob = np.clip(recover_prob, 0, 1)
-        deteriorate_prob = np.clip(deteriorate_prob, 0, 1)
+        if self.model:
+            # Use the neural network model to predict probabilities
+            features_tensor = torch.tensor(features, dtype=torch.float32).unsqueeze(0)  # Add batch dimension
+            transition_matrix = self.model(features_tensor).squeeze(0).detach().numpy()  # Remove batch dimension
+            recover_prob = transition_matrix[0, 1]  # Probability of recovering (0 -> 1)
+            deteriorate_prob = transition_matrix[1, 0]  # Probability of deteriorating (1 -> 0)
+        else:
+            # Fallback manual probability adjustment
+            recover_prob = self.base_recover_prob
+            deteriorate_prob = self.base_deteriorate_prob
 
         return recover_prob, deteriorate_prob
 
@@ -130,16 +133,19 @@ class RMABSimulator(gym.Env):
             # Compute Whittle index for groups
             for group_key in self.groups:
                 avg_recover_prob, avg_deteriorate_prob = self.adjust_group_probabilities(group_key)
-                # Use the state of the first patient in the group as a representative
-                state = self.state[self.groups[group_key][0]]
-                whittle_index = compute_whittle([avg_recover_prob, avg_deteriorate_prob], state, self.discount_factor, self.subsidy)
+                state = self.state[self.groups[group_key][0]]  # Representative state
+                whittle_index = compute_whittle(
+                    [avg_recover_prob, avg_deteriorate_prob], state, self.discount_factor, self.subsidy
+                )
                 whittle_indices.append((whittle_index, group_key))
         else:
             # Compute Whittle index for individual patients
             for i in range(self.num_arms):
                 recover_prob, deteriorate_prob = self.adjust_probabilities(self.features[i])
                 state = self.state[i]
-                whittle_index = compute_whittle([recover_prob, deteriorate_prob], state, self.discount_factor, self.subsidy)
+                whittle_index = compute_whittle(
+                    [recover_prob, deteriorate_prob], state, self.discount_factor, self.subsidy
+                )
                 whittle_indices.append((whittle_index, i))
 
         # Sort by Whittle index in descending order (treat the highest index)
@@ -151,7 +157,6 @@ class RMABSimulator(gym.Env):
         if self.grouping:
             # Treat the top-ranked groups
             for _, group_key in whittle_indices[:self.budget]:
-                # Treat all individuals in the group
                 for i in self.groups[group_key]:
                     action[i] = 1
         else:
@@ -160,7 +165,6 @@ class RMABSimulator(gym.Env):
                 action[patient_index] = 1
 
         return action
-
 
     def step(self, action):
         """
@@ -204,7 +208,6 @@ class RMABSimulator(gym.Env):
                     # Patient may become unhealthy without treatment
                     if np.random.rand() < deteriorate_prob:
                         next_state[i] = 0  # Patient becomes unhealthy
-                # Optionally add a penalty if a sick patient is not treated (can be customized)
 
         # Update the environment state
         self.state = next_state
@@ -233,31 +236,6 @@ class RMABSimulator(gym.Env):
         """
         pass
 
-    def compute_group_state(self):
-        """
-        Compute the average transition probability of the group.
-        If `grouping` is True, consider group-level characteristics.
-        Otherwise, compute based on individual states.
-        """
-        total_prob = 0
-        if self.grouping:
-            # Logic for grouping (can be based on patient characteristics, etc.)
-            group_avg_prob = np.mean(self.state)  # Example of how grouping can be simplified
-        else:
-            # Compute transition probabilities based on individual states
-            for i in range(self.num_arms):
-                if self.state[i] == 0:  # Unhealthy
-                    # Use the probability of transitioning from unhealthy to healthy
-                    total_prob += self.transitions[0][1]  # Transition from state 0 to state 1
-                else:  # Healthy
-                    # Use the probability of transitioning from healthy to unhealthy
-                    total_prob += self.transitions[1][0]  # Transition from state 1 to state 0
-        
-            # Calculate the average probability across the group
-            group_avg_prob = total_prob / self.num_arms
-
-        return group_avg_prob
-    
     def group_patients(self):
         """
         Group patients based on their features (e.g., age, sex, race, and pre-existing conditions).
@@ -274,7 +252,7 @@ class RMABSimulator(gym.Env):
             if group_key not in self.groups:
                 self.groups[group_key] = []
             self.groups[group_key].append(i)  # Add patient index to the group
-    
+
     def adjust_group_probabilities(self, group_key):
         """
         Adjust transition probabilities for a group based on average feature values.
@@ -294,45 +272,15 @@ class RMABSimulator(gym.Env):
         avg_deteriorate_prob = total_deteriorate_prob / len(group)
 
         return avg_recover_prob, avg_deteriorate_prob
-    
-    def calculate_average_probabilities(self):
-        """
-        Calculate the average recovery and deterioration probabilities for all arms (patients).
-        
-        Returns:
-        - avg_recover_prob: The average recovery probability across all arms.
-        - avg_deteriorate_prob: The average deterioration probability across all arms.
-        """
-        total_recover_prob = 0
-        total_deteriorate_prob = 0
-
-        # Loop through each arm (patient)
-        for i in range(self.num_arms):
-            features = self.features[i]
-            recover_prob, deteriorate_prob = self.adjust_probabilities(features)
-            
-            total_recover_prob += recover_prob
-            total_deteriorate_prob += deteriorate_prob
-        
-        # Compute the average by dividing by the number of arms
-        avg_recover_prob = total_recover_prob / self.num_arms
-        avg_deteriorate_prob = total_deteriorate_prob / self.num_arms
-        
-        return avg_recover_prob, avg_deteriorate_prob
-
-
-
-
 
 if __name__ == "__main__":
-    # Example usage of the RMABSimulator
-    env = RMABSimulator(num_arms=5, budget=2, grouping=False)
+    # Example usage of the RMABSimulator with a pretrained model
+    env = RMABSimulator(num_arms=5, budget=2, grouping=False, model_path="models/trained_model.pth")
+
     state = env.reset()
     print(f"Initial State: {state}")
 
     # Example step
-    action = np.array([1, 0, 1, 0, 0])  # Example action where we treat patients 0 and 2
-    next_state, reward, done, info = env.step(action)
-    print(f"Next State: {next_state}, Reward: {reward}")
-
-    
+    action = env.compute_whittle_actions()
+    next_state, reward, healthy_percentage, done, info = env.step(action)
+    print(f"Next State: {next_state}, Reward: {reward}, Healthy Percentage: {healthy_percentage}")

@@ -1,61 +1,73 @@
-def compute_whittle(transitions, state, discount_factor, subsidy):
+def compute_whittle(transitions, state, discount_factor, subsidy, reward_healthy=1, reward_unhealthy=-1):
     """
     Compute the Whittle index for a given arm (patient) in a specific state.
     
-    arguments:
-    - transitions: A list with two elements [recover_prob, deteriorate_prob] representing 
-                   the probabilities of recovering and deteriorating.
-    - state: Current state of the patient (0 or 1).
-    - discount_factor: The discount factor for future rewards (gamma).
-    - subsidy: The threshold or subsidy under which we balance treatment decisions.
+    Arguments:
+    - transitions: [recover_prob, deteriorate_prob], probabilities of recovery and deterioration.
+    - state: Current state of the patient (0: unhealthy, 1: healthy).
+    - discount_factor: Discount factor (gamma) for future rewards.
+    - subsidy: Baseline subsidy to balance treatment decisions.
+    - reward_healthy: Reward for a healthy state.
+    - reward_unhealthy: Reward (or penalty) for an unhealthy state.
     
     Returns:
-    - whittle_index: The computed Whittle index for the patient in the given state.
+    - whittle_index: The computed Whittle index for the given state and probabilities.
     """
     recover_prob, deteriorate_prob = transitions
 
-    # Compute the value of treating and not treating the patient
-    value_treat = compute_value_treatment(recover_prob, state, discount_factor)
-    value_no_treat = compute_value_no_treatment(deteriorate_prob, state, discount_factor)
-    
-    # Calculate opportunity cost
+    # Validate probabilities
+    if not (0 <= recover_prob <= 1 and 0 <= deteriorate_prob <= 1):
+        raise ValueError("Probabilities must be between 0 and 1.")
+
+    # Calculate values for treating and not treating
+    value_treat = compute_value_treatment(
+        recover_prob, state, discount_factor, reward_healthy, reward_unhealthy
+    )
+    value_no_treat = compute_value_no_treatment(
+        deteriorate_prob, state, discount_factor, reward_healthy, reward_unhealthy
+    )
+
+    # Opportunity cost of treating
     opportunity_cost = value_treat - value_no_treat
-    
-    # Compute the Whittle index by solving the subsidy
+
+    # Compute Whittle index
     whittle_index = subsidy + opportunity_cost
-    
     return whittle_index
 
 
-def compute_value_treatment(recover_prob, state, discount_factor):
+def compute_value_treatment(recover_prob, state, discount_factor, reward_healthy, reward_unhealthy):
     """
     Compute the expected value of treating a patient in a given state.
-    Adjust to use the dynamic recover probability and separate immediate rewards from future rewards.
     """
-    # Immediate reward
-    if state == 0:
-        immediate_reward = recover_prob * 1  # Reward for becoming healthy
-    else:
-        immediate_reward = 1  # Patient is already healthy
-    
-    # Future rewards
-    future_reward = discount_factor * recover_prob * 1  # Probability of remaining healthy in future
+    if state == 0:  # Unhealthy state
+        immediate_reward = recover_prob * reward_healthy + (1 - recover_prob) * reward_unhealthy
+    else:  # Healthy state
+        immediate_reward = reward_healthy
+
+    # Future rewards (infinite horizon assumption)
+    future_reward = (
+        discount_factor
+        * (recover_prob * reward_healthy + (1 - recover_prob) * reward_unhealthy)
+        / (1 - discount_factor)
+    )
 
     return immediate_reward + future_reward
 
-def compute_value_no_treatment(deteriorate_prob, state, discount_factor):
-    """
-    Compute the value of not treating a patient based on the current state.
-    Adjusted to use the dynamic deterioration probability instead of a fixed transition matrix.
-    """
-    # Immediate reward
-    immediate_reward = 0 if state == 1 else -1  # Penalize if the patient is unhealthy and no treatment is given
 
-    # Calculate future expected value based on deterioration probability
-    # This is the missing 'future_value' definition.
-    future_value = deteriorate_prob * (-1) + (1 - deteriorate_prob) * 1  # Penalize deterioration, reward staying healthy
+def compute_value_no_treatment(deteriorate_prob, state, discount_factor, reward_healthy, reward_unhealthy):
+    """
+    Compute the expected value of not treating a patient based on the current state.
+    """
+    if state == 1:  # Healthy state
+        immediate_reward = reward_healthy
+    else:  # Unhealthy state
+        immediate_reward = reward_unhealthy
 
-    # Apply discount factor to future rewards
-    future_reward = discount_factor * future_value
+    # Future rewards (infinite horizon assumption)
+    future_reward = (
+        discount_factor
+        * (deteriorate_prob * reward_unhealthy + (1 - deteriorate_prob) * reward_healthy)
+        / (1 - discount_factor)
+    )
 
     return immediate_reward + future_reward
