@@ -2,6 +2,9 @@ import gym
 import numpy as np
 from gym import spaces
 from compute_whittle import compute_whittle
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
+
 
 class RMABSimulator(gym.Env):
     """
@@ -74,8 +77,17 @@ class RMABSimulator(gym.Env):
 
         # If grouping is enabled, group the patients
         if self.grouping:
-            self.group_patients()
-
+             # 1) Possibly scale the features
+            feats_scaled = StandardScaler().fit_transform(self.features)
+            # 2) K-means
+            kmeans = KMeans(n_clusters=5, random_state=0).fit(feats_scaled)
+            # 3) Build self.groups
+            self.groups = {}
+            for i in range(self.num_arms):
+                c = kmeans.labels_[i]
+                if c not in self.groups:
+                    self.groups[c] = []
+                self.groups[c].append(i)
         return self.state
 
     def _build_transition_matrix(self, recover_prob, deteriorate_prob):
@@ -156,92 +168,121 @@ class RMABSimulator(gym.Env):
 
     def step(self, action):
         """
-        Apply an action to the environment and transition to the next state.
-        Action is a binary vector indicating which patients are being treated.
+        A step that counts each healthy arm based on the *current* (old) state,
+        then transitions to the next state afterwards.
 
         Returns:
-            next_state: updated state after this step
-            reward: total reward obtained
-            healthy_percentage: % of arms in state=1
-            done: always False in this example
-            info: additional debug info
+            next_state,
+            reward (sum of old state's healthy arms),
+            healthy_percentage (of the new state),
+            done,
+            info
         """
         # Validate the action
         assert self.action_space.contains(action), "Invalid action!"
         assert np.sum(action) <= self.budget, f"Exceeded budget {self.budget}"
 
+        # 1) Record old state for reward
+        old_state = self.state.copy()
+        # Reward based on how many arms were healthy in old_state
+        reward = np.sum(old_state)
+
+        # 2) Compute next_state
         next_state = np.zeros_like(self.state)
-        reward = 0
-
         for i in range(self.num_arms):
-            s = self.state[i]          # current state (0 or 1)
-            a = action[i]              # 0 or 1
-            # Probability distribution for next state
-            p = self.transitions[i, a, s, :]  # shape = (2,)
-            # Sample next state
-            s_next = np.random.choice([0,1], p=p)
-
-            # Compute reward logic (similar to old code):
-            # If we're treating (a=1):
-            #   - If s=1 (patient healthy), we give +1
-            #   - If s=0 and s_next=1, we give +1 for recovery
-            if a == 1:
-                if s == 1:
-                    reward += 1
-                elif s == 0 and s_next == 1:
-                    reward += 1
-
+            s = self.state[i]           # current state
+            a = action[i]               # 0 or 1
+            p = self.transitions[i, a, s, :]
+            s_next = np.random.choice([0, 1], p=p)
             next_state[i] = s_next
 
+        # 3) Update self.state to the newly sampled next_state
         self.state = next_state
+
+        # 4) Healthy percentage is based on the *new* state
         healthy_percentage = np.mean(self.state) * 100
         done = False
         info = {}
 
         return next_state, reward, healthy_percentage, done, info
 
+
+
     def compute_whittle_actions(self):
         """
-        Compute the Whittle index for each patient or group and decide which patients to treat.
-        Currently still uses a simpler approach in `compute_whittle()`,
-        which expects [recover_prob, deteriorate_prob].
+        Compute the formal Whittle index for each arm using the 2x2x2 transition matrix.
+        Select the top arms within the budget.
         """
+        # If you have grouping, you can handle it similarly by computing
+        # a group-level transition matrix or merging transitions, but here's
+        # the per-arm logic:
+
         whittle_indices = []
 
-        # For grouping or single patients, we still rely on "adjust_probabilities" each time.
+        # Group Logic - Under Construction
         if self.grouping:
-            for group_key in self.groups:
-                avg_recover_prob, avg_deteriorate_prob = self.adjust_group_probabilities(group_key)
-                # Use the state of the first patient as representative
-                rep_state = self.state[self.groups[group_key][0]]
-                index = compute_whittle([avg_recover_prob, avg_deteriorate_prob],
-                                        rep_state, self.discount_factor, self.subsidy)
-                whittle_indices.append((index, group_key))
+            whittle_indices = []
+            for group_id in self.groups:
+                # pick a 'representative' state
+                # e.g. we just choose the first arm's state in this group
+                rep_arm = self.groups[group_id][0]
+                s = self.state[rep_arm]
+                
+                # or average the states if you want, but typically
+                # you'd just pick 1 for whittle calculation
+
+                # build average transitions
+                cluster_trans = self.build_cluster_transition(group_id)
+                
+                # compute whittle index, ignoring the fact that multiple states exist
+                w_index = compute_whittle(cluster_trans, s, self.discount_factor)
+                whittle_indices.append((w_index, group_id))
+
+            # sort by descending whittle
+            whittle_indices.sort(reverse=True, key=lambda x: x[0])
+
+            # pick top budget groups
+            chosen = [group for _, group in whittle_indices[:self.budget]]
+
+            # final action array
+            action = np.zeros(self.num_arms, dtype=int)
+            for group_id in chosen:
+                for arm_idx in self.groups[group_id]:
+                    action[arm_idx] = 1
+
+            return action
         else:
-            # For each individual
+            # No grouping => compute an index for each arm individually
             for i in range(self.num_arms):
-                # Re-derive the probabilities (though we already have them in self.transitions[i],
-                # we keep this for compatibility with your existing compute_whittle usage)
-                features = self.features[i]
-                r_prob, d_prob = self.adjust_probabilities(features)
                 s = self.state[i]
-                index = compute_whittle([r_prob, d_prob], s, self.discount_factor, self.subsidy)
-                whittle_indices.append((index, i))
+                # self.transitions[i] is shape (2,2,2) for arm i
+                w_index = compute_whittle(self.transitions[i], s, self.discount_factor)
+                whittle_indices.append((w_index, i))
 
-        # Sort by descending Whittle index
-        whittle_indices.sort(reverse=True, key=lambda x: x[0])
+            # Sort by descending Whittle index
+            whittle_indices.sort(reverse=True, key=lambda x: x[0])
 
-        # Choose top arms (or groups)
-        action = np.zeros(self.num_arms, dtype=int)
-        if self.grouping:
-            for _, group_key in whittle_indices[:self.budget]:
-                for i in self.groups[group_key]:
-                    action[i] = 1
-        else:
+            # Pick the top arms
+            action = np.zeros(self.num_arms, dtype=int)
             for _, arm_idx in whittle_indices[:self.budget]:
                 action[arm_idx] = 1
 
-        return action
+            return action
+    
+    # Suppose self.groups is {0: [arm_i1, arm_i2, ...], 1: [...], ...}
+    # We'll build an "average" 2x2x2 matrix for each group 
+    #  by summing up transitions among that group's arms.
+
+    def build_cluster_transition(self, cluster_id):
+        members = self.groups[cluster_id]
+        # initialize an empty 2x2x2
+        cluster_trans = np.zeros((2,2,2))
+        for idx in members:
+            cluster_trans += self.transitions[idx]
+        # then average by dividing
+        cluster_trans /= len(members)
+        return cluster_trans
+
 
     def render(self, mode='human'):
         """ Print the current state for debugging or visualization. """
@@ -249,40 +290,6 @@ class RMABSimulator(gym.Env):
 
     def close(self):
         pass
-
-    # Under Construction
-    # def group_patients(self):
-    #     """
-    #     Group patients based on features (e.g., age & pre-existing conditions).
-    #     Left as-is for now, since grouping logic is not the main focus here.
-    #     """
-    #     self.groups = {}
-    #     for i in range(self.num_arms):
-    #         age_group = ("young" if self.features[i, 0] < 0.33
-    #                      else "middle-aged" if self.features[i, 0] < 0.66
-    #                      else "old")
-    #         pre_condition_group = ("low" if self.features[i, 3] < 0.33
-    #                                else "moderate" if self.features[i, 3] < 0.66
-    #                                else "high")
-    #         group_key = (age_group, pre_condition_group)
-    #         if group_key not in self.groups:
-    #             self.groups[group_key] = []
-    #         self.groups[group_key].append(i)
-
-    # def adjust_group_probabilities(self, group_key):
-    #     """
-    #     Compute average (recover_prob, deteriorate_prob) for a group of arms.
-    #     """
-    #     group = self.groups[group_key]
-    #     total_recover = 0
-    #     total_deter = 0
-    #     for i in group:
-    #         r, d = self.adjust_probabilities(self.features[i])
-    #         total_recover += r
-    #         total_deter += d
-    #     avg_r = total_recover / len(group)
-    #     avg_d = total_deter / len(group)
-    #     return avg_r, avg_d
 
 if __name__ == "__main__":
     # Quick test

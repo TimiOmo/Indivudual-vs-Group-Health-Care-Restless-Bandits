@@ -1,73 +1,99 @@
-def compute_whittle(transitions, state, discount_factor, subsidy, reward_healthy=1, reward_unhealthy=-1):
+# File: compute_whittle.py
+
+import numpy as np
+
+def compute_whittle(transitions,
+                    current_state,
+                    discount_factor,
+                    lambda_low=0.0,
+                    lambda_high=2.0,
+                    max_iter=50,
+                    tol=1e-6):
     """
-    Compute the Whittle index for a given arm (patient) in a specific state.
-    
-    Arguments:
-    - transitions: [recover_prob, deteriorate_prob], probabilities of recovery and deterioration.
-    - state: Current state of the patient (0: unhealthy, 1: healthy).
-    - discount_factor: Discount factor (gamma) for future rewards.
-    - subsidy: Baseline subsidy to balance treatment decisions.
-    - reward_healthy: Reward for a healthy state.
-    - reward_unhealthy: Reward (or penalty) for an unhealthy state.
-    
-    Returns:
-    - whittle_index: The computed Whittle index for the given state and probabilities.
+    Compute the Whittle index for a 2-state arm in 'current_state'
+    assuming reward = s (if s=1 => +1, s=0 => +0) minus lambda if action=1.
+    The environment's actual reward does *not* subtract cost, but
+    lambda appears here as a Lagrange multiplier from the budget constraint.
+
+    transitions: shape (2,2,2): transitions[a,s,s_next].
+    current_state: 0 or 1.
+    discount_factor: float in (0,1).
+    lambda_low, lambda_high: search bounds for lambda.
+    max_iter: how many bisection steps and Q-iterations to do.
+    tol: tolerance for concluding Q(passive) ~ Q(active).
     """
-    recover_prob, deteriorate_prob = transitions
 
-    # Validate probabilities
-    if not (0 <= recover_prob <= 1 and 0 <= deteriorate_prob <= 1):
-        raise ValueError("Probabilities must be between 0 and 1.")
+    def compute_qvalues_for_lambda(lambda_val,
+                                   transitions,
+                                   discount_factor,
+                                   max_iter=50,
+                                   tol=1e-6):
+        """
+        Solve the 2-state Bellman equations for the given lambda:
+          r_lambda(s,a) = s - lambda*(a==1).
+        """
+        Q = np.zeros((2,2))  # Q[s,a] for s=0..1, a=0..1
 
-    # Calculate values for treating and not treating
-    value_treat = compute_value_treatment(
-        recover_prob, state, discount_factor, reward_healthy, reward_unhealthy
-    )
-    value_no_treat = compute_value_no_treatment(
-        deteriorate_prob, state, discount_factor, reward_healthy, reward_unhealthy
-    )
+        for _ in range(max_iter):
+            Q_prev = Q.copy()
+            for s in (0,1):
+                for a in (0,1):
+                    # Immediate reward: s minus lambda if action=1
+                    r_sa = float(s) - (lambda_val if a == 1 else 0.0)
 
-    # Opportunity cost of treating
-    opportunity_cost = value_treat - value_no_treat
+                    # Value of next states
+                    exp_val = 0.0
+                    for s_next in (0,1):
+                        # next state's value = max of Q[s_next, any a']
+                        v_next = max(Q_prev[s_next,0], Q_prev[s_next,1])
+                        exp_val += transitions[a, s, s_next] * v_next
 
-    # Compute Whittle index
-    whittle_index = subsidy + opportunity_cost
-    return whittle_index
+                    Q[s,a] = r_sa + discount_factor * exp_val
+
+            # check for convergence
+            if np.max(np.abs(Q - Q_prev)) < tol:
+                break
+
+        return Q
+
+    def q_diff(lambda_val):
+        """
+        Difference Q_lambda(current_state, 0) - Q_lambda(current_state, 1).
+        If difference=0, you're indifferent => that lambda is the index.
+        """
+        Q = compute_qvalues_for_lambda(lambda_val,
+                                       transitions,
+                                       discount_factor,
+                                       max_iter=max_iter,
+                                       tol=tol)
+        return Q[current_state, 0] - Q[current_state, 1]
+
+    # Bisection search to find the lambda where Q(passive)=Q(active).
+    left, right = lambda_low, lambda_high
+    left_diff  = q_diff(left)
+    right_diff = q_diff(right)
+
+    for _ in range(max_iter):
+        mid = 0.5 * (left + right)
+        mid_diff = q_diff(mid)
+
+        if abs(mid_diff) < tol:
+            return mid  # near exact root
+
+        if np.sign(mid_diff) == np.sign(left_diff):
+            left = mid
+            left_diff = mid_diff
+        else:
+            right = mid
+
+    return 0.5*(left+right)  # best guess if no exact crossing found
 
 
-def compute_value_treatment(recover_prob, state, discount_factor, reward_healthy, reward_unhealthy):
+def compute_whittle_for_both_states(transitions, discount_factor):
     """
-    Compute the expected value of treating a patient in a given state.
+    Convenience: get the Whittle index for state=0 and state=1
+    in a single call. Returns a dict with 'W0' and 'W1'.
     """
-    if state == 0:  # Unhealthy state
-        immediate_reward = recover_prob * reward_healthy + (1 - recover_prob) * reward_unhealthy
-    else:  # Healthy state
-        immediate_reward = reward_healthy
-
-    # Future rewards (infinite horizon assumption)
-    future_reward = (
-        discount_factor
-        * (recover_prob * reward_healthy + (1 - recover_prob) * reward_unhealthy)
-        / (1 - discount_factor)
-    )
-
-    return immediate_reward + future_reward
-
-
-def compute_value_no_treatment(deteriorate_prob, state, discount_factor, reward_healthy, reward_unhealthy):
-    """
-    Compute the expected value of not treating a patient based on the current state.
-    """
-    if state == 1:  # Healthy state
-        immediate_reward = reward_healthy
-    else:  # Unhealthy state
-        immediate_reward = reward_unhealthy
-
-    # Future rewards (infinite horizon assumption)
-    future_reward = (
-        discount_factor
-        * (deteriorate_prob * reward_unhealthy + (1 - deteriorate_prob) * reward_healthy)
-        / (1 - discount_factor)
-    )
-
-    return immediate_reward + future_reward
+    w0 = compute_whittle(transitions, 0, discount_factor)
+    w1 = compute_whittle(transitions, 1, discount_factor)
+    return {'W0': w0, 'W1': w1}
